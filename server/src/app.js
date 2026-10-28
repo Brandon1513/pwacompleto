@@ -10,24 +10,46 @@ import { connectToDB } from "./db/connect.js";
 
 const app = express();
 
+// ---------- CORS ----------
+// Normaliza un origen: sin espacios, sin comillas, sin "/" final, en minúsculas.
+// Así, errores al escribir la variable en Vercel no rompen CORS.
+const normalize = (o) => o.trim().replace(/^["']|["']$/g, "").replace(/\/+$/, "").toLowerCase();
+
 // FRONT_ORIGIN acepta varios orígenes separados por coma (producción + previews).
-// Se quita la "/" final, un error clásico que rompe CORS.
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://localhost:5175",
-  "http://localhost:4173", // vite preview (para probar la PWA ya compilada)
-  ...(process.env.FRONT_ORIGIN || "").split(","),
-]
-  .map((o) => o.trim().replace(/\/$/, ""))
+const allowedOrigins = (process.env.FRONT_ORIGIN || "")
+  .split(",")
+  .map(normalize)
   .filter(Boolean);
 
-// Usamos token Bearer (no cookies), así que no hace falta credentials: true.
-app.use(cors({ origin: allowedOrigins }));
+// En local aceptamos cualquier puerto de localhost (Vite cambia de puerto
+// si el 5173 está ocupado). En Vercel solo se permite lo de FRONT_ORIGIN.
+const isLocalhost = (o) => /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Postman, curl y el cron no mandan origin: CORS no aplica para ellos
+      if (!origin) return callback(null, true);
+
+      const o = normalize(origin);
+      const allowed = allowedOrigins.includes(o) || (!process.env.VERCEL && isLocalhost(o));
+
+      if (!allowed) {
+        // Aparece en Vercel → Logs: dice exactamente qué llegó y qué se esperaba
+        console.warn(`CORS rechazado: "${origin}". Permitidos: ${JSON.stringify(allowedOrigins)}`);
+      }
+      callback(null, allowed);
+    },
+  })
+);
+
 app.use(express.json({ limit: "1mb" }));
 app.use(morgan(process.env.VERCEL ? "tiny" : "dev"));
 
-// Health check (no necesita base de datos)
-app.get("/", (_req, res) => res.json({ ok: true, name: "todo-pwa-api" }));
+// Health check (no necesita base de datos). Los orígenes no son secretos.
+app.get("/", (_req, res) =>
+  res.json({ ok: true, name: "todo-pwa-api", corsOrigins: allowedOrigins })
+);
 
 // Conexión a Mongo cacheada (segura en serverless).
 // Express 5 manda automáticamente los errores async al manejador de abajo.
